@@ -247,6 +247,9 @@ void __afl_manual_init(void) {
 
 
 /* Proper initialization routine. */
+// 若函数被设定为constructor属性，则该函数在main函数执行之前被自动执行
+// constructor(0)为最高优先级
+// __attribute__((constructor(0)))
 
 __attribute__((constructor(CONST_PRIO))) void __afl_auto_init(void) {
 

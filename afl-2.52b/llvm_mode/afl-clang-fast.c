@@ -363,3 +363,21 @@ int main(int argc, char** argv) {
   return 0;
 
 }
+
+
+// -D__AFL_LOOP(_A)=
+// ({ 
+//   static volatile char *_B __attribute__((used));  
+//   _B = (char*)"##SIG_AFL_PERSISTENT##"; 
+//   __attribute__((visibility("default"))) int _L(unsigned int) __asm__("__afl_persistent_loop"); 
+//   _L(_A); 
+// }) 
+
+// -D__AFL_INIT()=
+// do 
+// { 
+//   static volatile char *_A __attribute__((used));  
+//   _A = (char*)"##SIG_AFL_DEFER_FORKSRV##"; 
+//   __attribute__((visibility("default"))) void _I(void) __asm__("__afl_manual_init"); 
+//   _I(); 
+// } while (0)
