@@ -30,6 +30,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fstream>
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SmallVector.h"
@@ -48,6 +51,9 @@
 #include "llvm/IR/Function.h"
 
 using namespace llvm;
+
+std::ofstream PassLogFile; // Pass静态分析日志，目录地址从环境变量PASS_LOG_DIR中获取
+#define PASS_LOG_DIR_DEFAULT "/tmp"
 
 Function *SanCovTraceCmpFunction[4];
 Function *SanCovTraceConstCmpFunction[4];
@@ -242,10 +248,10 @@ void InjectTraceForStrcmp(ArrayRef<Instruction *> StrcmpTraceTargets)
 
             if (!tmp.empty())
             {
-                errs() << "[" << call_inst->getCalledFunction()->getName() << "] ";
+                PassLogFile << "[" << call_inst->getCalledFunction()->getName().str() << "] ";
                 for (int i = 0; i < tmp.size() - 1; i++)
-                    errs() << tmp[i] << " ";
-                errs() << tmp[tmp.size() - 1] << "\n";
+                    PassLogFile << "[" << tmp[i].str() << "] ";
+                PassLogFile << "[" << tmp[tmp.size() - 1].str() << "]\n";
             }
         }
     }
@@ -316,19 +322,54 @@ bool AFLCoverage::runOnFunction(Function &F)
 
 bool AFLCoverage::runOnModule(Module &M)
 {
-
-    CurModule = &M;
-    C = &(M.getContext());
-    DL = &M.getDataLayout();
-    Triple TargetTriple = Triple(M.getTargetTriple());
-
     std::string moduleName = M.getName();
     auto i = moduleName.rfind('/', moduleName.length());
     if (i != std::string::npos)
     {
         moduleName = moduleName.substr(i + 1, moduleName.length() - i);
     }
-    errs() << "[+] " << moduleName << "\n";
+    outs() << "[+] " << moduleName << "\n";
+
+    char* PASS_LOG_DIR = getenv("PASS_LOG_DIR");
+    struct stat info;
+    std::string PASS_LOG_PATH;
+    if (stat(PASS_LOG_DIR, &info) != 0)
+    {
+        outs() << "[+] Writing Pass Log into " << PASS_LOG_DIR_DEFAULT << "\n";
+        PASS_LOG_PATH = PASS_LOG_DIR_DEFAULT;
+    }
+    else if (info.st_mode & S_IFDIR)
+    {
+        outs() << "[+] Writing Pass Log into " << PASS_LOG_DIR << "\n";
+        PASS_LOG_PATH = PASS_LOG_DIR;
+    }
+    else
+    {
+        outs() << "[!] No Such DIR " << PASS_LOG_DIR << "\n";
+        return false;
+    }
+
+    // if (PASS_LOG_PATH.back() == '/')
+    //     PASS_LOG_PATH.pop_back();
+    
+    PASS_LOG_PATH += '/';
+    PASS_LOG_PATH += moduleName;
+    PASS_LOG_PATH += "_log";
+
+    outs() << "[+] Writing into " << PASS_LOG_PATH << "\n";
+
+    PassLogFile.open(PASS_LOG_PATH);
+
+    if (!PassLogFile)
+    {
+        outs() << "[!] NO VALID PASS_LOG_PATH!\n";
+        return false;
+    }
+
+    CurModule = &M;
+    C = &(M.getContext());
+    DL = &M.getDataLayout();
+    Triple TargetTriple = Triple(M.getTargetTriple());
 
     //
     IRBuilder<> IRB(*C);
@@ -375,6 +416,8 @@ bool AFLCoverage::runOnModule(Module &M)
         // errs() << "[F] " << F.getName() << "\n";
         runOnFunction(F);
     }
+
+    PassLogFile.close();
 
     return true;
 }
