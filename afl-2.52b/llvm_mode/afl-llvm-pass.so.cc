@@ -33,6 +33,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fstream>
+#include <sstream>
+#include <iomanip>
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SmallVector.h"
@@ -186,21 +188,33 @@ void InjectTraceForSwitch(ArrayRef<Instruction *> SwitchTraceTargets)
     }
 }
 
-std::vector<std::string> cmpcall_routines = {
+std::vector<std::string> CmpCalls = {
     "strcmp", "strncmp", "strcasecmp", "strncasecmp", "memcmp"
 };
 
-bool is_cmpcall(std::string fn_name)
+bool IsCmpCall(std::string fn_name)
 {
-    for(std::vector<std::string>::size_type i = 0; i < cmpcall_routines.size(); i++)
+    for(std::vector<std::string>::size_type i = 0; i < CmpCalls.size(); i++)
     {
-        if (fn_name.size() == cmpcall_routines[i].size() 
-            && fn_name.compare(0, cmpcall_routines[i].size(), cmpcall_routines[i]) == 0)
+        if (fn_name.size() == CmpCalls[i].size() 
+            && fn_name.compare(0, CmpCalls[i].size(), CmpCalls[i]) == 0)
             return true;
     }
     return false;
 }
 
+/*
+    string转为hex string
+*/
+std::string ToHex(const std::string& s)
+{
+    std::ostringstream ret;
+
+    for (std::string::size_type i = 0; i < s.length(); ++i)
+        ret << std::hex << std::setfill('0') << std::setw(2) << std::uppercase << (int)s[i];
+
+    return ret.str();
+}
 
 void InjectTraceForStrcmp(ArrayRef<Instruction *> StrcmpTraceTargets)
 {
@@ -250,8 +264,8 @@ void InjectTraceForStrcmp(ArrayRef<Instruction *> StrcmpTraceTargets)
             {
                 PassLogFile << "[" << call_inst->getCalledFunction()->getName().str() << "] ";
                 for (int i = 0; i < tmp.size() - 1; i++)
-                    PassLogFile << "[" << tmp[i].str() << "] ";
-                PassLogFile << "[" << tmp[tmp.size() - 1].str() << "]\n";
+                    PassLogFile << "[" << ToHex(tmp[i].str()) << "] ";
+                PassLogFile << "[" << ToHex(tmp[tmp.size() - 1].str()) << "]\n";
             }
         }
     }
@@ -268,23 +282,28 @@ void InjectCoverage(ArrayRef<BasicBlock *> BlocksToInstrument)
     }
 }
 
+bool isInvalidFunction(Function &F)
+{
+    return F.empty() || F.getName().contains("__sanitizer_") || F.getLinkage() == GlobalValue::AvailableExternallyLinkage;
+}
+
 bool AFLCoverage::runOnFunction(Function &F)
 {
-    if (F.empty() || F.getName().contains("__sanitizer_") || F.getLinkage() == GlobalValue::AvailableExternallyLinkage)
-    {
+    if (isInvalidFunction(F))
         return false;
-    }
+
+    PassLogFile << "[F] " << F.getName().str() << "\n";
 
     SmallVector<Instruction *, 8> CmpTraceTargets;
     SmallVector<Instruction *, 8> SwitchTraceTargets;
     SmallVector<Instruction *, 8> StrcmpTraceTargets;
     SmallVector<BasicBlock *, 16> BlocksToInstrument;
 
-    bool isMain = F.getName().equals("main") ? true : false;
+    // bool isMain = F.getName().equals("main") ? true : false;
 
     for (auto &BB : F)
     {
-        // outs() << "[BB] " << BB.getName() << "\n";
+        PassLogFile << "[BB] " << BB.getName().str() << "\n";
         BlocksToInstrument.push_back(&BB);
         for (auto &Inst : BB)
         {
@@ -304,10 +323,13 @@ bool AFLCoverage::runOnFunction(Function &F)
                         continue;
                 }
 
-                if (is_cmpcall(fn->getName()))
-                {
+                if (isInvalidFunction(*fn))
+                    continue;
+
+                PassLogFile << "[BBC] " << fn->getName().str() << "\n";
+
+                if (IsCmpCall(fn->getName()))
                     StrcmpTraceTargets.push_back(&Inst);
-                }
             }
         }
     }
@@ -319,7 +341,13 @@ bool AFLCoverage::runOnFunction(Function &F)
 
     return true;
 }
-
+/*
+    环境变量 PASS_LOG_DIR 日志文件输出地址
+    编译过程中每个Modlue对应的输出文件为PASS_LOG_PATH/moduleName_log
+    [F] 函数名
+    [BB] 基本块命名
+    [BBC] 基本块调用函数名
+*/ 
 bool AFLCoverage::runOnModule(Module &M)
 {
     std::string moduleName = M.getName();
@@ -413,11 +441,10 @@ bool AFLCoverage::runOnModule(Module &M)
 
     for (auto &F : M)
     {
-        // errs() << "[F] " << F.getName() << "\n";
         runOnFunction(F);
     }
 
-    PassLogFile.close();
+    PassLogFile.close(); // 关闭该Module的输出文件
 
     return true;
 }
@@ -455,3 +482,5 @@ static RegisterStandardPasses RegisterAFLPass0(PassManagerBuilder::EP_EnabledOnO
 // dot -Tpng cfg.main.dot > cfg.main.png
 // llc -filetype=obj final.bc # final.o
 // clang final.o -o final
+
+// PASS_LOG_DIR=/data2/zhangzheng1/codes/myUtilities/LLVMPass/llvm-pass-skeleton/PASS_LOG ~/zhangzheng1/codes/my-afl-2.52b/afl-2.52b/afl-clang-fast test.c -o test
