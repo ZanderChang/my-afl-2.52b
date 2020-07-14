@@ -312,13 +312,13 @@ void __sanitizer_cov_trace_pc_guard_init(uint32_t* start, uint32_t* stop) {
 
 // 将运行时搜集到的信息保存到环境变量RUNTIME_LOG_PATH指定的文件中
 
-void __sanitizer_cov_trace_pc()
+void __sanitizer_cov_trace_pc(uint64_t *Arg1)
 {
   FILE* fp = fopen(getenv("RUNTIME_LOG_PATH"), "a");
   if (fp)
   {
     uintptr_t PC = (uintptr_t)(__builtin_return_address(0));
-	  fprintf(fp, "[PC] 0x%x\n", PC);
+	  fprintf(fp, "[PC] 0x%x %s\n", PC, Arg1);
     fclose(fp);
   }
 	// uintptr_t Idx = PC & (((uintptr_t)1 << fuzzer::TracePC::kTracePcBits) - 1);

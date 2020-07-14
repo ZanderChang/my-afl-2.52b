@@ -35,10 +35,13 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <map>
+#include <assert.h>
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/IRBuilder.h"
@@ -87,6 +90,9 @@ Type *Int64Ty, *Int64PtrTy;
 Type *Int32Ty;
 Type *Int16Ty;
 Type *Int8Ty;
+
+// 
+int64_t EmptyBasicBlockId = 0;
 
 namespace {
 
@@ -192,12 +198,11 @@ std::vector<std::string> CmpCalls = {
     "strcmp", "strncmp", "strcasecmp", "strncasecmp", "memcmp"
 };
 
-bool IsCmpCall(std::string fn_name)
+bool IsCmpCall(std::string Name)
 {
-    for(std::vector<std::string>::size_type i = 0; i < CmpCalls.size(); i++)
+    for (std::vector<std::string>::size_type i = 0; i < CmpCalls.size(); i++)
     {
-        if (fn_name.size() == CmpCalls[i].size() 
-            && fn_name.compare(0, CmpCalls[i].size(), CmpCalls[i]) == 0)
+        if (Name.size() == CmpCalls[i].size() && Name.compare(0, CmpCalls[i].size(), CmpCalls[i]) == 0)
             return true;
     }
     return false;
@@ -271,20 +276,28 @@ void InjectTraceForStrcmp(ArrayRef<Instruction *> StrcmpTraceTargets)
     }
 }
 
-void InjectCoverage(ArrayRef<BasicBlock *> BlocksToInstrument)
+void InjectCoverage(ArrayRef<BasicBlock *> BlocksToInstrument, std::map<BasicBlock*, std::string>& BlockToName)
 {
     for (auto BB : BlocksToInstrument)
     {
+        assert(BlockToName.count(BB) > 0);
+
+        std::string BlockName = BlockToName[BB];
+        Constant *ConstantName = ConstantDataArray::getString(*C, BlockName, true); // CDS
+        GlobalVariable *GV = new GlobalVariable(*CurModule, ConstantName->getType(), true, GlobalVariable::InternalLinkage, ConstantName);
+
         BasicBlock::iterator IP = BB->getFirstInsertionPt();
         IRBuilder<> IRB(&*IP);
-        IRB.CreateCall(SanCovTracePC); // gets the PC using GET_CALLER_PC.
+        IRB.CreateCall(SanCovTracePC, {IRB.CreatePointerCast(GV, Int64PtrTy)}); // gets the PC using GET_CALLER_PC.
         IRB.CreateCall(EmptyAsm, {}); // Avoids callback merge.
     }
 }
 
 bool isInvalidFunction(Function &F)
 {
-    return F.empty() || F.getName().contains("__sanitizer_") || F.getLinkage() == GlobalValue::AvailableExternallyLinkage;
+    // return F.empty() || F.getName().contains("__sanitizer_") || F.getLinkage() == GlobalValue::AvailableExternallyLinkage;
+    return F.getName().contains("__sanitizer_") || F.getName().contains("llvm.");
+    // return false;
 }
 
 bool AFLCoverage::runOnFunction(Function &F)
@@ -298,13 +311,46 @@ bool AFLCoverage::runOnFunction(Function &F)
     SmallVector<Instruction *, 8> SwitchTraceTargets;
     SmallVector<Instruction *, 8> StrcmpTraceTargets;
     SmallVector<BasicBlock *, 16> BlocksToInstrument;
+    std::map<BasicBlock*, std::string> BlockToName;
+    std::map<BasicBlock*, std::string> EmptyBlockToId;
 
     // bool isMain = F.getName().equals("main") ? true : false;
 
     for (auto &BB : F)
     {
-        PassLogFile << "[BB] " << BB.getName().str() << "\n";
+        std::string BasicBlockName;
+        if (BB.getName().empty()) // 防止Label为空
+        {
+            if (EmptyBlockToId.count(&BB) == 0)
+                EmptyBlockToId[&BB] = "emptyBB." + std::to_string(EmptyBasicBlockId++);
+            BasicBlockName = EmptyBlockToId[&BB];
+        }
+        else
+            BasicBlockName = BB.getName().str();
+
+        // 静态分析时加上BasicBlock后续BasicBlock信息
+        PassLogFile << "[BB] " << BasicBlockName;
+
+        for (BasicBlock* Succ : successors(&BB))
+        {
+            if (Succ->getName().empty()) // 防止Label为空
+            {
+                if (EmptyBlockToId.count(&BB) == 0)
+                    EmptyBlockToId[&BB] = "emptyBB." + std::to_string(EmptyBasicBlockId++);
+                BasicBlockName = EmptyBlockToId[&BB];
+            }
+            else
+                BasicBlockName = Succ->getName().str();
+            PassLogFile << "|" << BasicBlockName;
+        }
+        PassLogFile << "\n";
+
         BlocksToInstrument.push_back(&BB);
+
+        // 构造BasicBlock全局唯一的名字
+        // 所属模块|所属函数|该基本块
+        BlockToName[&BB] = CurModule->getName().str() + "|" + F.getName().str() + "|" + BasicBlockName;
+
         for (auto &Inst : BB)
         {
             if (isa<ICmpInst>(&Inst))
@@ -334,7 +380,7 @@ bool AFLCoverage::runOnFunction(Function &F)
         }
     }
 
-    InjectCoverage(BlocksToInstrument);
+    InjectCoverage(BlocksToInstrument, BlockToName);
     InjectTraceForCmp(CmpTraceTargets);
     InjectTraceForSwitch(SwitchTraceTargets);
     InjectTraceForStrcmp(StrcmpTraceTargets);
@@ -342,11 +388,19 @@ bool AFLCoverage::runOnFunction(Function &F)
     return true;
 }
 /*
-    环境变量 PASS_LOG_DIR 日志文件输出地址
+    环境变量 PASS_LOG_DIR 编译时日志文件输出地址
     编译过程中每个Modlue对应的输出文件为PASS_LOG_PATH/moduleName_log
     [F] 函数名
     [BB] 基本块命名
     [BBC] 基本块调用函数名
+    [*cmp] strcmp类函数中的const字符串（hex形式）
+
+    环境变量 RUNTIME_LOG_PATH 运行时日志文件输出地址
+    运行过程中程序插桩输出文件为RUNTIME_LOG_PATH
+    [PC] 基本块地址 基本块在IR中的名称
+    [STRCMP] strcmp类函数的参数
+    [CMP] cmp指令的2个值
+    [SWITCH] switch指令的每个case的值
 */ 
 bool AFLCoverage::runOnModule(Module &M)
 {
@@ -422,7 +476,7 @@ bool AFLCoverage::runOnModule(Module &M)
 
     SanCovTraceStrcmpFunction = checkSanitizerInterfaceFunction(M.getOrInsertFunction(SanCovTraceStrcmpName, VoidTy, Int64PtrTy, Int64PtrTy, Int64Ty));
 
-    SanCovTracePC = checkSanitizerInterfaceFunction(M.getOrInsertFunction(SanCovTracePCName, VoidTy));
+    SanCovTracePC = checkSanitizerInterfaceFunction(M.getOrInsertFunction(SanCovTracePCName, VoidTy, Int64PtrTy));
 
     // We insert an empty inline asm after cov callbacks to avoid callback merge.
     EmptyAsm = InlineAsm::get(FunctionType::get(IRB.getVoidTy(), false), StringRef(""), StringRef(""), /*hasSideEffects=*/true);
