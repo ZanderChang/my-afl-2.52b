@@ -312,7 +312,6 @@ bool AFLCoverage::runOnFunction(Function &F)
     SmallVector<Instruction *, 8> StrcmpTraceTargets;
     SmallVector<BasicBlock *, 16> BlocksToInstrument;
     std::map<BasicBlock*, std::string> BlockToName;
-    std::map<BasicBlock*, std::string> EmptyBlockToId;
 
     // bool isMain = F.getName().equals("main") ? true : false;
 
@@ -320,28 +319,16 @@ bool AFLCoverage::runOnFunction(Function &F)
     {
         std::string BasicBlockName;
         if (BB.getName().empty()) // 防止Label为空
-        {
-            if (EmptyBlockToId.count(&BB) == 0)
-                EmptyBlockToId[&BB] = "emptyBB." + std::to_string(EmptyBasicBlockId++);
-            BasicBlockName = EmptyBlockToId[&BB];
-        }
-        else
-            BasicBlockName = BB.getName().str();
+            BB.setName(Twine("emptyBB.").concat(Twine(EmptyBasicBlockId++)));
 
         // 静态分析时加上BasicBlock后续BasicBlock信息
-        PassLogFile << "[BB] " << BasicBlockName;
+        PassLogFile << "[BB] " << BB.getName().str();
 
         for (BasicBlock* Succ : successors(&BB))
         {
             if (Succ->getName().empty()) // 防止Label为空
-            {
-                if (EmptyBlockToId.count(&BB) == 0)
-                    EmptyBlockToId[&BB] = "emptyBB." + std::to_string(EmptyBasicBlockId++);
-                BasicBlockName = EmptyBlockToId[&BB];
-            }
-            else
-                BasicBlockName = Succ->getName().str();
-            PassLogFile << "|" << BasicBlockName;
+                Succ->setName(Twine("emptyBB.").concat(Twine(EmptyBasicBlockId++)));
+            PassLogFile << "|" << Succ->getName().str();
         }
         PassLogFile << "\n";
 
@@ -349,7 +336,7 @@ bool AFLCoverage::runOnFunction(Function &F)
 
         // 构造BasicBlock全局唯一的名字
         // 所属模块|所属函数|该基本块
-        BlockToName[&BB] = CurModule->getName().str() + "|" + F.getName().str() + "|" + BasicBlockName;
+        BlockToName[&BB] = CurModule->getName().str() + "|" + F.getName().str() + "|" + BB.getName().str();
 
         for (auto &Inst : BB)
         {
