@@ -48,6 +48,7 @@
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -304,8 +305,14 @@ bool AFLCoverage::runOnFunction(Function &F)
 {
     if (isInvalidFunction(F))
         return false;
+    
+    // 获取函数在源代码中的所在行
+    unsigned int LineNum = 0;
+    DISubprogram* DISp = F.getSubprogram();
+    if (DISp)
+        LineNum = DISp->getLine();
 
-    PassLogFile << "[F] " << F.getName().str() << "\n";
+    PassLogFile << "[F] " << F.getName().str() << " " << LineNum << "\n";
 
     SmallVector<Instruction *, 8> CmpTraceTargets;
     SmallVector<Instruction *, 8> SwitchTraceTargets;
@@ -340,6 +347,25 @@ bool AFLCoverage::runOnFunction(Function &F)
 
         for (auto &Inst : BB)
         {
+            // 输出Inst源码位置信息和自身
+            const DebugLoc & InstDebugInfo = Inst.getDebugLoc();
+            unsigned int InstLine = 0;
+            unsigned int InstCol = 0;
+
+            if (InstDebugInfo)
+            {
+                InstLine = InstDebugInfo.getLine();
+                InstCol = InstDebugInfo.getCol();
+            }
+
+            // std::string InstStr;
+            // raw_string_ostream ss(InstStr);
+            // ss << Inst;
+
+            // PassLogFile << "[I] " << InstLine << "|" << InstCol << "|" << ss.str() << "\n";
+
+            PassLogFile << "[I] " << InstLine << "|" << InstCol << "\n";
+
             if (isa<ICmpInst>(&Inst))
                 CmpTraceTargets.push_back(&Inst);
             if (isa<SwitchInst>(&Inst))
@@ -377,8 +403,9 @@ bool AFLCoverage::runOnFunction(Function &F)
 /*
     环境变量 PASS_LOG_DIR 编译时日志文件输出地址
     编译过程中每个Modlue对应的输出文件为PASS_LOG_PATH/moduleName_log
-    [F] 函数名
+    [F] 函数名 源代码所在行
     [BB] 基本块命名
+    [I]
     [BBC] 基本块调用函数名
     [*cmp] strcmp类函数中的const字符串（hex形式）
 
